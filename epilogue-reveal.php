@@ -94,61 +94,116 @@ function ep_reveal_shortcode($atts, $content = null) {
     echo $form; // raw MailerLite embed code (old or new)
     echo '</div>';
 
-    echo <<<EOD
-    <script>
-    document.addEventListener("DOMContentLoaded", function () {
-        function unlockEpilogue() {
-            document.cookie = "ep_reveal_{$post->ID}=1; path=/; max-age=86400";
-            location.reload();
+echo <<<EOD
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var DEBUG = /[?&]epilogue_debug=1/.test(location.search);
+  function dbg(){ if (DEBUG) console.log.apply(console, ['[EpilogueReveal]'].concat([].slice.call(arguments))); }
+
+  function setUnlockCookie(){
+    var domain = location.hostname.replace(/^www\\./,'');
+    var cookie = "ep_reveal_{$post->ID}=1; path=/; max-age=" + (60*60*24*365) + "; domain=." + domain + "; SameSite=Lax";
+    if (location.protocol === 'https:') cookie += "; Secure";
+    document.cookie = cookie;
+    dbg('Cookie set:', cookie);
+  }
+
+  function unlock(){
+    setUnlockCookie();
+    location.reload();
+  }
+
+  document.querySelectorAll(".ep-reveal-form-wrapper form").forEach(function(form){
+    form.addEventListener("submit", async function(e){
+      e.preventDefault(); // keep user on the page
+      dbg('Submitting via fetch ->', form.action);
+
+      try {
+        var res = await fetch(form.action, {
+          method: (form.method || 'POST').toUpperCase(),
+          body: new FormData(form),   // no custom headers → avoid CORS preflight
+          mode: 'cors',
+          credentials: 'omit'
+        });
+
+        var success = false;
+        var ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+        dbg('Response:', res.status, ct);
+
+        if (/json/i.test(ct)) {
+          // New ML endpoints often return JSON like {"success":true}
+          try {
+            var json = await res.json();
+            dbg('JSON:', json);
+            success = !!(json && (json.success === true || json.status === 'success'));
+          } catch(err) {
+            dbg('JSON parse failed', err);
+          }
+        } else {
+          // Older endpoints return HTML; look for success UI markers
+          var text = await res.text();
+          dbg('Text length:', text.length);
+          success = res.ok && /ml-form-successBody|Thank you/i.test(text);
         }
 
-        // Intercept all forms (old and new MailerLite included)
-        document.querySelectorAll(".ep-reveal-form-wrapper form").forEach(form => {
-            form.addEventListener("submit", async function(e) {
-                e.preventDefault();
-                const formData = new FormData(form);
-                const action = form.getAttribute("action");
+        if (success) {
+          dbg('Subscription success detected');
+          unlock();
+        } else {
+          dbg('Subscription not confirmed by response');
+          alert("❌ Subscription failed. Please try again.");
+        }
+      } catch (err) {
+        dbg('Network/Fetch error', err);
+        alert("❌ Network error. Please try again.");
+      }
+    }, { passive:false });
+  });
 
-                try {
-                    const res = await fetch(action, {
-                        method: "POST",
-                        body: formData,
-                        headers: {
-                            'X-Requested-With': 'XMLHttpRequest'
-                        }
-                    });
-
-                    const text = await res.text();
-                    let success = false;
-
-                    // Try JSON parse (for new MailerLite)
-                    try {
-                        const json = JSON.parse(text);
-                        if (json && json.success === true) {
-                            success = true;
-                        }
-                    } catch (err) {
-                        // Old MailerLite returns HTML; assume success if form didn't error
-                        if (res.ok && text.includes("ml-form-successContent")) {
-                            success = true;
-                        }
-                    }
-
-                    if (success) {
-                        unlockEpilogue();
-                    } else {
-                        alert("❌ Subscription failed. Please try again.");
-                    }
-
-                } catch (err) {
-                    alert("❌ Network error. Please try again.");
-                }
-            });
-        });
-    });
-    </script>
-    EOD;
+  dbg('Init complete');
+});
+</script>
+EOD;
 
     return do_shortcode(ob_get_clean());
 }
 add_shortcode('epilogue_reveal', 'ep_reveal_shortcode');
+
+// 3) Bypass cache on pages that contain the [epilogue_reveal] shortcode
+add_action('template_redirect', function () {
+    if (is_admin() || wp_doing_ajax()) return; // frontend only
+    if (!is_singular()) return;
+
+    global $post;
+    if ($post && has_shortcode($post->post_content, 'epilogue_reveal')) {
+        nocache_headers(); // send WP's standard no-cache headers
+
+        // Extra hardening (optional):
+        // header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        // header('Pragma: no-cache');
+    }
+});
+
+// Disable cache/minify on any singular of the selected post types
+add_action('wp', function () {
+    if (is_admin() || wp_doing_ajax() || !is_singular()) return;
+    global $post;
+    if (!$post) return;
+    $allowed = get_option('ep_reveal_post_types', []);
+    if (in_array($post->post_type, $allowed, true)) {
+        if (!defined('DONOTCACHEPAGE'))   define('DONOTCACHEPAGE', true);
+        if (!defined('DONOTCACHEOBJECT')) define('DONOTCACHEOBJECT', true);
+        if (!defined('DONOTMINIFY'))      define('DONOTMINIFY', true);
+    }
+});
+
+// Also send no-cache headers (helps with proxies/CDN)
+add_action('template_redirect', function () {
+    if (!is_singular()) return;
+    global $post;
+    if (!$post) return;
+    $allowed = get_option('ep_reveal_post_types', []);
+    if (in_array($post->post_type, $allowed, true)) {
+        nocache_headers();
+    }
+});

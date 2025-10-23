@@ -30,12 +30,10 @@ Paste MailerLite embed HTML per product author.
 
 Wrap protected content with:
 
-php
-Αντιγραφή
-Επεξεργασία
 [epilogue_reveal]
 Your gated epilogue / preview content here.
 [/epilogue_reveal]
+
 How it works
 On selected post types, the shortcode checks for ep_reveal_<postID> cookie.
 
